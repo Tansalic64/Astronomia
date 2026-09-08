@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from astronomia.core.astro import calcular_visibilidad
 from astronomia.core.storage import Storage
+from astronomia.core.ubicacion import Ubicacion
 
 log = logging.getLogger("astronomia.ui.side_panel")
 
@@ -41,6 +43,7 @@ class SidePanel(QDockWidget):
         super().__init__("Favoritos e historial", parent)
         self.setObjectName("side_panel")
         self._storage = storage
+        self._ubicacion: Ubicacion | None = None
 
         contenedor = QWidget(self)
         layout = QVBoxLayout(contenedor)
@@ -84,18 +87,36 @@ class SidePanel(QDockWidget):
         return widget
 
     # -- Datos ----------------------------------------------------------------
+    def fijar_ubicacion(self, ubicacion: Ubicacion | None) -> None:
+        """Ubicación del observador, para mostrar qué está visible ahora.
+
+        `None` (el valor por defecto, mientras no se detecte/fije ninguna)
+        simplemente hace que no se muestre esa información — el resto del
+        panel funciona igual.
+        """
+        self._ubicacion = ubicacion
+        self.refrescar()
+
     def refrescar(self) -> None:
         """Vuelve a cargar ambas listas desde la base de datos."""
         self._lista_favoritos.clear()
         for fav in self._storage.listar_favoritos():
             texto = fav.nombre if not fav.descripcion else f"{fav.nombre} — {fav.descripcion}"
+            texto = self._con_visibilidad(texto, fav.ra, fav.dec)
             self._lista_favoritos.addItem(self._crear_item(texto, fav.nombre, fav.ra, fav.dec))
 
         self._lista_historial.clear()
         for entrada in self._storage.listar_historial():
+            texto = self._con_visibilidad(entrada.nombre, entrada.ra, entrada.dec)
             self._lista_historial.addItem(
-                self._crear_item(entrada.nombre, entrada.nombre, entrada.ra, entrada.dec)
+                self._crear_item(texto, entrada.nombre, entrada.ra, entrada.dec)
             )
+
+    def _con_visibilidad(self, texto: str, ra: float | None, dec: float | None) -> str:
+        if self._ubicacion is None or ra is None or dec is None:
+            return texto
+        vis = calcular_visibilidad(ra, dec, self._ubicacion.lat, self._ubicacion.lon)
+        return f"{texto}  [{vis.texto_breve()}]"
 
     @staticmethod
     def _crear_item(texto: str, nombre: str, ra: float | None, dec: float | None) -> QListWidgetItem:

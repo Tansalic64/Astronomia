@@ -16,7 +16,12 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -29,11 +34,16 @@ from PySide6.QtWidgets import (
 
 from astronomia import __version__
 from astronomia.config import APP_NAME, settings
+from astronomia.core.astro import cenit_ra_dec
 from astronomia.core.catalog import CATALOGO_DEMO, buscar
 from astronomia.core.storage import Storage
+from astronomia.core.ubicacion import Ubicacion
+from astronomia.ui.creditos import DialogoCreditos
+from astronomia.ui.geolocalizador import Geolocalizador
 from astronomia.ui.side_panel import SidePanel
 from astronomia.ui.sky_view import SkyView
 from astronomia.ui.sun_panel import SunPanel
+from astronomia.ui.visor_web import VisorWeb
 
 log = logging.getLogger("astronomia.ui.main_window")
 
@@ -56,11 +66,20 @@ class MainWindow(QMainWindow):
         # nombre por Simbad, antes de que llegue `posicion_cambiada`).
         self._objeto_actual: str | None = None
         self._pos_actual: tuple[float, float] | None = None
+        self._ubicacion: Ubicacion | None = None
+        # Ventana embebida para "Ver en SIMBAD"/"Ver en VizieR" — se crea la
+        # primera vez que hace falta (ver `_on_pagina_web_solicitada`), no aquí.
+        self._visor_web: VisorWeb | None = None
 
         self.storage = Storage()
 
+        self._geolocalizador = Geolocalizador(self)
+        self._geolocalizador.ubicacion_detectada.connect(self._on_ubicacion_detectada)
+        self._geolocalizador.error.connect(self._on_error_ubicacion)
+
         self._crear_barra_herramientas()
         self._menu_ver = self._crear_menus()
+        self._crear_menu_ubicacion()
         self._crear_barra_estado()
 
         # El mapa y los paneles acoplables se crean DESPUÉS de mostrar la
@@ -105,6 +124,24 @@ class MainWindow(QMainWindow):
         self.sun_panel = SunPanel(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.sun_panel)
         self._menu_ver.addAction(self.sun_panel.toggleViewAction())
+
+        # Ubicación: si ya se conocía de una sesión anterior, se usa
+        # directamente; si no, se intenta detectar por IP en segundo
+        # plano (no bloquea nada si falla o tarda — el resto de la app
+        # funciona igual sin ubicación, simplemente sin el indicador de
+        # "visible ahora").
+        ubicacion_guardada = self.storage.obtener_ubicacion()
+        if ubicacion_guardada is not None:
+            self._fijar_ubicacion(ubicacion_guardada, guardar=False)
+        else:
+            self._geolocalizador.detectar()
+
+        # Refresca periódicamente el indicador de "visible ahora" del
+        # panel lateral (la altura de un objeto cambia con el tiempo,
+        # aunque el usuario no toque nada).
+        self._timer_refresco_visibilidad = QTimer(self)
+        self._timer_refresco_visibilidad.timeout.connect(self.side_panel.refrescar)
+        self._timer_refresco_visibilidad.start(5 * 60_000)
 
     def _crear_barra_herramientas(self) -> None:
         barra = QToolBar("Navegación", self)
@@ -162,6 +199,9 @@ class MainWindow(QMainWindow):
             menu_objetos.addAction(accion)
 
         menu_ayuda = self.menuBar().addMenu("A&yuda")
+        accion_creditos = QAction("Créditos y fuentes de datos…", self)
+        accion_creditos.triggered.connect(self._on_creditos)
+        menu_ayuda.addAction(accion_creditos)
         accion_acerca = QAction("Acerca de…", self)
         accion_acerca.triggered.connect(self._on_acerca_de)
         menu_ayuda.addAction(accion_acerca)
@@ -171,12 +211,36 @@ class MainWindow(QMainWindow):
     def _crear_barra_estado(self) -> None:
         self.setStatusBar(QStatusBar(self))
         self.statusBar().showMessage("Cargando mapa celeste…")
+        self._label_ubicacion = QLabel("Ubicación: detectando…", self)
+        self.statusBar().addPermanentWidget(self._label_ubicacion)
+
+    def _crear_menu_ubicacion(self) -> None:
+        menu = self.menuBar().addMenu("&Ubicación")
+
+        accion_detectar = QAction("Detectar automáticamente (por IP)", self)
+        accion_detectar.triggered.connect(self._geolocalizador.detectar)
+        menu.addAction(accion_detectar)
+
+        accion_manual = QAction("Fijar manualmente…", self)
+        accion_manual.triggered.connect(self._on_fijar_ubicacion_manual)
+        menu.addAction(accion_manual)
+
+        menu.addSeparator()
+
+        self._accion_centrar_cenit = QAction("Centrar mapa en el cenit", self)
+        self._accion_centrar_cenit.setToolTip(
+            "Mueve el mapa al punto justo encima de tu cabeza ahora mismo"
+        )
+        self._accion_centrar_cenit.setEnabled(False)  # hasta que haya ubicación
+        self._accion_centrar_cenit.triggered.connect(self._on_centrar_cenit)
+        menu.addAction(self._accion_centrar_cenit)
 
     def _conectar_senales(self) -> None:
         bridge = self.sky_view.bridge
         bridge.mapa_listo.connect(self._on_mapa_listo)
         bridge.posicion_cambiada.connect(self._on_posicion_cambiada)
         bridge.objeto_clicado.connect(self._on_objeto_clicado)
+        bridge.pagina_web_solicitada.connect(self._on_pagina_web_solicitada)
 
     # -- Manejadores de eventos ----------------------------------------------
     def _on_mapa_listo(self) -> None:
@@ -193,6 +257,16 @@ class MainWindow(QMainWindow):
 
     def _on_objeto_clicado(self, etiqueta: str, ra: float, dec: float) -> None:
         self.statusBar().showMessage(f"Seleccionado: {etiqueta} (RA {ra:.4f}°, DEC {dec:.4f}°)", 5000)
+
+    def _on_pagina_web_solicitada(self, url: str) -> None:
+        """"Ver en SIMBAD"/"Ver en VizieR" del menú contextual del mapa:
+        mostrar la página en una ventana propia en vez de salir al
+        navegador del sistema. Se reutiliza la misma ventana en consultas
+        sucesivas (se crea la primera vez que hace falta).
+        """
+        if self._visor_web is None:
+            self._visor_web = VisorWeb(self)
+        self._visor_web.navegar_a(url)
 
     def _on_buscar(self) -> None:
         texto = self.buscador.text().strip()
@@ -264,6 +338,9 @@ class MainWindow(QMainWindow):
         if ok:
             self.sky_view.fijar_fov(valor)
 
+    def _on_creditos(self) -> None:
+        DialogoCreditos(self).exec()
+
     def _on_acerca_de(self) -> None:
         QMessageBox.about(
             self,
@@ -273,7 +350,80 @@ class MainWindow(QMainWindow):
             "Estrategia: PySide6 + QWebChannel.",
         )
 
+    # -- Ubicación del observador ------------------------------------------
+    def _on_ubicacion_detectada(self, ubicacion: Ubicacion) -> None:
+        self._fijar_ubicacion(ubicacion, guardar=True)
+        self.statusBar().showMessage(f"Ubicación detectada: {ubicacion.etiqueta()}", 4000)
+
+    def _on_error_ubicacion(self, mensaje: str) -> None:
+        log.warning(mensaje)
+        # No es un error grave: el resto de la app funciona igual sin
+        # ubicación. Un aviso breve en la barra de estado basta — no hace
+        # falta interrumpir al usuario con un diálogo modal.
+        self.statusBar().showMessage(mensaje, 5000)
+        if self._ubicacion is None:
+            self._label_ubicacion.setText("Ubicación: no disponible")
+
+    def _fijar_ubicacion(self, ubicacion: Ubicacion, guardar: bool) -> None:
+        self._ubicacion = ubicacion
+        if guardar:
+            self.storage.guardar_ubicacion(ubicacion)
+        self._label_ubicacion.setText(f"📍 {ubicacion.etiqueta()}")
+        self._accion_centrar_cenit.setEnabled(True)
+        # El panel lateral puede no existir todavía (se llama también desde
+        # `_construir_contenido`, justo después de crearlo — pero por si
+        # este método se llama alguna vez antes, mejor no asumir).
+        panel = getattr(self, "side_panel", None)
+        if panel is not None:
+            panel.fijar_ubicacion(ubicacion)
+
+    def _on_fijar_ubicacion_manual(self) -> None:
+        dialogo = QDialog(self)
+        dialogo.setWindowTitle("Fijar ubicación manualmente")
+        formulario = QFormLayout(dialogo)
+
+        actual = self._ubicacion
+        campo_lat = QDoubleSpinBox(dialogo)
+        campo_lat.setRange(-90.0, 90.0)
+        campo_lat.setDecimals(4)
+        campo_lat.setSuffix("°")
+        campo_lat.setValue(actual.lat if actual else 0.0)
+        formulario.addRow("Latitud (N positiva):", campo_lat)
+
+        campo_lon = QDoubleSpinBox(dialogo)
+        campo_lon.setRange(-180.0, 180.0)
+        campo_lon.setDecimals(4)
+        campo_lon.setSuffix("°")
+        campo_lon.setValue(actual.lon if actual else 0.0)
+        formulario.addRow("Longitud (E positiva):", campo_lon)
+
+        campo_ciudad = QLineEdit(dialogo)
+        campo_ciudad.setText(actual.ciudad if actual else "")
+        campo_ciudad.setPlaceholderText("Opcional")
+        formulario.addRow("Nombre (opcional):", campo_ciudad)
+
+        botones = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialogo
+        )
+        botones.accepted.connect(dialogo.accept)
+        botones.rejected.connect(dialogo.reject)
+        formulario.addRow(botones)
+
+        if dialogo.exec() == QDialog.DialogCode.Accepted:
+            ubicacion = Ubicacion(lat=campo_lat.value(), lon=campo_lon.value(), ciudad=campo_ciudad.text().strip())
+            self._fijar_ubicacion(ubicacion, guardar=True)
+
+    def _on_centrar_cenit(self) -> None:
+        if self._ubicacion is None:
+            return
+        ra, dec = cenit_ra_dec(self._ubicacion.lat, self._ubicacion.lon)
+        self.sky_view.ir_a_coordenadas(ra, dec)
+        self.statusBar().showMessage("Mapa centrado en el cenit", 3000)
+
     # -- Ciclo de vida ---------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        # Antes de cerrar la BD: si hay una detección de ubicación en
+        # curso, su respuesta podría llegar después y usarla ya cerrada.
+        self._geolocalizador.cancelar()
         self.storage.close()
         super().closeEvent(event)

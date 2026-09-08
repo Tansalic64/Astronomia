@@ -30,10 +30,16 @@ def test_index_html_existe():
 def test_main_window_se_crea(qtbot, tmp_path, monkeypatch):
     """Requiere pytest-qt. Verifica que la ventana principal se instancia sin errores."""
     import astronomia.config as config
+    from astronomia.ui.geolocalizador import Geolocalizador
     from astronomia.ui.main_window import MainWindow
 
     # Nunca tocar la base de datos real del usuario desde un test.
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.sqlite3")
+    # Ni hacer peticiones de red reales: con la BD vacía (sin ubicación
+    # guardada), `_construir_contenido` dispararía una detección por IP de
+    # verdad, cuya respuesta asíncrona podría llegar después de que este
+    # test ya haya cerrado `storage` más abajo.
+    monkeypatch.setattr(Geolocalizador, "detectar", lambda self: None)
 
     ventana = MainWindow()
     qtbot.addWidget(ventana)

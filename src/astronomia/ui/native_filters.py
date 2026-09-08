@@ -1,10 +1,6 @@
-"""Filtro de eventos nativos de Windows para el menú contextual del mapa.
+"""Filtro de eventos nativos de Windows: descarta `WM_CONTEXTMENU`.
 
-Ver el comentario largo de `FiltroContextMenuNativo` para el porqué de
-este archivo — resumen: hace falta descartar el mensaje nativo
-`WM_CONTEXTMENU` de Windows ANTES de que Qt lo procese, porque ese
-procesamiento (a nivel de Qt/QtWebEngine, no de nuestro código) parece
-colgar el proceso de renderizado del mapa tras un clic derecho.
+Ver el docstring de `FiltroContextMenuNativo` para el porqué.
 """
 
 from __future__ import annotations
@@ -35,28 +31,20 @@ class _MSG(ctypes.Structure):
 class FiltroContextMenuNativo(QAbstractNativeEventFilter):
     """Descarta `WM_CONTEXTMENU` antes de que Qt llegue a procesarlo.
 
-    Historial (ver también las notas de depuración del README): tras un
-    clic derecho sobre el mapa, se comprobó con eventos de ratón REALES
-    (botón derecho físico del usuario, no simulados) que `mousedown` y
-    `mouseup` sí llegan con normalidad al JavaScript de la página — pero
-    el evento `"contextmenu"` del DOM nunca llega a sintetizarse, Y ADEMÁS
-    el zoom del mapa deja de responder después, **incluso sin que nuestro
-    propio código (ni JS ni Python) intervenga en absoluto** en ese clic
-    derecho. Eso descarta que el problema esté en nuestro propio manejo
-    del menú contextual: algo en el procesamiento INTERNO de Qt/QtWebEngine
-    del mensaje nativo `WM_CONTEXTMENU` de Windows dejaba el proceso de
-    renderizado de Chromium colgado.
-
-    La solución: interceptar `WM_CONTEXTMENU` en el filtro de eventos
-    nativos de la aplicación (que ve los mensajes de Windows ANTES que el
-    bucle de eventos normal de Qt) y descartarlo sin más — Qt nunca
-    llega a "verlo". El botón derecho (mousedown/mouseup), que sí
-    funciona con normalidad, sigue llegando a Chromium igual que antes;
-    solo se descarta este mensaje concreto, que es puramente el disparador
-    de "quizá quieras mostrar un menú aquí", no el clic en sí. El menú
-    propio del mapa se dispara entonces desde JavaScript escuchando
-    `"mouseup"` (botón derecho) en vez de `"contextmenu"` — ver
-    `resources/web/js/bridge.js`.
+    El clic derecho, en esta app, ya no dispara ningún menú propio (ver
+    `resources/web/js/bridge.js`: se investigó a fondo y se abandonó por
+    un bloqueo interno de Chromium sin solución encontrada a nivel de Qt
+    ni de JavaScript — el menú se dispara con Mayús + clic izquierdo en
+    su lugar). Este filtro se queda de todas formas como medida
+    defensiva: sin él, un clic derecho accidental del usuario deja
+    colgado el proceso de renderizado del mapa (comprobado con eventos de
+    ratón reales: tras el clic, hasta el zoom con la rueda deja de
+    responder). Descartando `WM_CONTEXTMENU` al nivel más bajo posible —
+    el filtro de eventos nativos de la aplicación, que ve los mensajes de
+    Windows ANTES que el bucle de eventos normal de Qt — ese cuelgue no
+    llega a producirse. El resto del clic derecho (mousedown/mouseup)
+    sigue llegando con normalidad a Chromium; solo se descarta este
+    mensaje concreto.
     """
 
     def nativeEventFilter(self, event_type: bytes, message) -> tuple[bool, int]:  # noqa: N802

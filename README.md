@@ -1,8 +1,10 @@
 # Astronomía
 
 Aplicación de escritorio de astronomía. Mapa celeste interactivo (Aladin Lite)
-embebido en una ventana Qt nativa, con favoritos e historial persistentes y
-un panel de imágenes solares casi en tiempo real (SDO, GONG H-alpha).
+embebido en una ventana Qt nativa, con favoritos e historial persistentes,
+un panel de imágenes solares casi en tiempo real (SDO, GONG H-alpha) y
+ubicación del observador (detectada por IP o manual) para saber qué está
+visible por encima del horizonte ahora mismo.
 
 **Estrategia:** PySide6 (Qt6) + `QWebEngineView` para el mapa, comunicados por
 `QWebChannel`. Un único proceso, un único lenguaje de control (Python).
@@ -22,18 +24,27 @@ Astronomia/
 │   │   ├── main_window.py        # QMainWindow: menús, toolbar, statusbar
 │   │   ├── side_panel.py         # QDockWidget: favoritos e historial
 │   │   ├── sun_panel.py          # QDockWidget: Sol casi en directo (QNetworkAccessManager)
-│   │   └── sky_view.py           # QWebEngineView + QWebChannel
+│   │   ├── sky_view.py           # QWebEngineView + QWebChannel
+│   │   ├── visor_web.py          # ventana embebida para SIMBAD/VizieR
+│   │   ├── creditos.py           # ventana "Créditos y fuentes de datos"
+│   │   ├── geolocalizador.py     # detecta la ubicación por IP (QNetworkAccessManager)
+│   │   └── native_filters.py     # filtro de eventos nativos de Windows (ver notas)
 │   ├── bridge/sky_bridge.py      # QObject expuesto al JS (señales/slots)
 │   ├── core/
 │   │   ├── catalog.py            # catálogo demo de objetos (sin Qt)
-│   │   ├── storage.py            # favoritos/historial en SQLite (sin Qt)
-│   │   └── solar.py              # fuentes solares SDO/GONG (sin Qt)
-│   └── resources/web/
-│       ├── index.html
-│       ├── js/bridge.js          # puente JS + selección de mirror HiPS
-│       ├── js/i18n_aladin.js     # traducción EN->ES del propio widget de Aladin
-│       ├── css/app.css
-│       └── vendor/aladin/        # Aladin Lite v3 vendorizado (sin CDN)
+│   │   ├── storage.py            # favoritos/historial/ubicación en SQLite (sin Qt)
+│   │   ├── solar.py              # fuentes solares SDO/GONG (sin Qt)
+│   │   ├── astro.py              # RA/Dec -> altura/azimut, tiempo sidéreo (sin Qt)
+│   │   ├── ubicacion.py          # modelo Ubicacion + parseo geolocalización IP (sin Qt)
+│   │   └── creditos.py           # listado de fuentes de datos (sin Qt)
+│   └── resources/
+│       ├── icons/creditos/       # logos de CDS/NASA/NSO (vendorizados, sin red)
+│       └── web/
+│           ├── index.html
+│           ├── js/bridge.js      # puente JS + selección de mirror HiPS
+│           ├── js/i18n_aladin.js # traducción EN->ES del propio widget de Aladin
+│           ├── css/app.css
+│           └── vendor/aladin/    # Aladin Lite v3 vendorizado (sin CDN)
 └── tests/
 ```
 
@@ -98,6 +109,65 @@ muestra una imagen del Sol que se refresca sola, con un selector de fuente:
 La descarga es asíncrona vía `QNetworkAccessManager` (nunca bloquea la UI).
 El botón "Actualizar ahora" fuerza un refresco inmediato sin esperar a la
 cadencia de la fuente.
+
+## Menú del mapa
+
+**Mayús + clic izquierdo** sobre el mapa abre un menú (el propio de Aladin
+Lite, con acciones nuestras — ver `resources/web/js/bridge.js`) con:
+
+- **Centrar aquí** — mueve el mapa al punto pulsado.
+- **Copiar coordenadas** — al portapapeles.
+- **Ver en SIMBAD** / **Ver en VizieR** — abren la consulta correspondiente
+  en una ventana propia de la app (`ui/visor_web.py`, un `QWebEngineView`
+  embebido con botón "Abrir en el navegador"), no en el navegador del
+  sistema. Se reutiliza la misma ventana en consultas sucesivas.
+
+¿Por qué Mayús + clic izquierdo y no el clic derecho, la ubicación
+"natural" para un menú así? Ver la sección de depuración más abajo — en
+resumen, el clic derecho tiene un bloqueo interno de Chromium en este
+embebido concreto que no se ha conseguido resolver, así que se optó por
+un disparador que sí funciona con total fiabilidad.
+
+## Créditos y fuentes de datos
+
+Menú **Ayuda → Créditos y fuentes de datos…**: lista, con logo, los
+organismos de los que depende la app para presentar información (CDS,
+NASA/SDO, NSO/GONG, ipwho.is) — varios de ellos piden explícitamente ser
+citados al usar sus datos. Listado en `core/creditos.py` (sin Qt); logos
+vendorizados en `resources/icons/creditos/` (descargados una vez de las
+fuentes oficiales, sin dependencia de red en cada arranque — mismo
+espíritu que Aladin Lite).
+
+## Ubicación y visibilidad
+
+Al primer arranque, la app intenta detectar automáticamente la ubicación del
+observador por IP (`ipwho.is`, sin necesidad de permisos del sistema —
+precisión de ciudad, de sobra para esto). Se guarda en SQLite y no se vuelve
+a pedir en arranques posteriores, salvo que se detecte o fije otra a mano
+desde el menú **Ubicación**:
+
+- **Detectar automáticamente (por IP)** — repite la detección anterior.
+- **Fijar manualmente…** — introducir latitud/longitud a mano (útil si la
+  detección por IP falla, o para planificar observaciones desde otro sitio).
+- **Centrar mapa en el cenit** — mueve el mapa al punto justo encima de la
+  cabeza del observador en este momento.
+
+Con la ubicación fijada, el panel de **Favoritos e historial** muestra junto
+a cada objeto si está visible ahora mismo (altura sobre el horizonte y punto
+cardinal, o "bajo el horizonte"), refrescado automáticamente cada 5 minutos.
+
+Los cálculos (tiempo sidéreo, altura/azimut) están en `core/astro.py`, en
+Python puro, sin dependencias externas — nada de `astropy`/`skyfield`
+(robustas, pero muy pesadas para lo que hace falta: saber si algo está por
+encima del horizonte con precisión de menos de un grado, no astrometría de
+precisión).
+
+Esto es una primera versión deliberadamente ligera. Una vista de horizonte
+completa al estilo Stellarium (constelaciones, estrellas a simple vista,
+planetas, en un panel aparte) se consideró y se descartó por ahora: Aladin
+Lite es un visor de cielo profundo (imágenes de survey), no un motor de
+planetario — haría falta una librería nueva y datos (catálogo de estrellas,
+líneas de constelaciones) que no tenemos. Queda como posible fase futura.
 
 ## Idioma
 
@@ -172,57 +242,49 @@ código. Además:
      montando `SkyView` — de ahí el `QTimer.singleShot(500, ...)` en
      `sun_panel.py` antes de la primera descarga.
 
-- **Menú contextual (clic derecho) sobre el mapa.** El más largo de
-  depurar de todos, porque durante mucho tiempo se buscó la causa en el
-  sitio equivocado (routing de eventos de Qt) cuando en realidad estaba
-  en JavaScript. Varios intentos fallidos, por este orden, antes de dar
-  con la causa real:
-  1. Un menú hecho en JS (disparado por `mousedown`) parecía dejar de
-     recibir cualquier evento después del clic (`mousemove`, teclado...).
-  2. Sobrescribir `contextMenuEvent()` en `SkyView`: nunca se llamaba.
-  3. Instalar un `eventFilter` sobre `self.focusProxy()` (el widget
-     interno de renderizado de Chromium, que es quien de verdad recibe el
-     evento crudo del sistema operativo — `QWebEngineView` es solo un
-     envoltorio): esto sí capturaba un `QEvent.Type.ContextMenu`, pero
-     `self.lastContextMenuRequest()` se quedaba en `None` para siempre
-     (con reintentos de hasta 2s), y cualquier `runJavaScript()`
-     posterior también se quedaba colgado.
-  4. **La causa real**, encontrada mirando el código de la propia Aladin
-     Lite vendorizada (`resources/web/vendor/aladin/aladin.js`, minificado):
-     registra SU PROPIO listener de `"contextmenu"` sobre su canvas y
-     llama a `event.preventDefault()` **incondicionalmente** (para poder
-     mostrar su propio menú, funcionalidad normal de Aladin activable con
-     `showContextMenu`, que aquí tenemos desactivada). Ese
-     `preventDefault()` es justo lo que le dice a Chromium "la página ya
-     se ha encargado de este clic" — el proceso de render NUNCA llega a
-     pedirle a Qt que muestre un menú nativo, así que
-     `contextMenuEvent()`/`lastContextMenuRequest()` no se disparan
-     JAMÁS. No era un error nuestro, ni de Qt, ni del entorno: es el
-     comportamiento normal de un navegador ante una página que gestiona
-     su propio clic derecho — simplemente había que mirar qué hacía la
-     librería vendorizada en vez de pelear contra el sistema de eventos
-     de Qt.
-  5. **La solución**, íntegramente en `resources/web/js/bridge.js`
-     (función `configurarMenuContextual`): en vez de pelear contra
-     Aladin, usar su PROPIO sistema de menú contextual
-     (`aladin.contextMenu`, que Aladin crea siempre, esté o no activado
-     `showContextMenu`) con nuestras propias acciones ("Centrar aquí",
-     "Copiar coordenadas", "Ver en SIMBAD", "Ver en VizieR"). Para eso
-     hace falta interceptar el evento `"contextmenu"` ANTES que el
-     listener propio de Aladin (que se re-adjunta sus acciones por
-     defecto en cada clic, sobrescribiendo las nuestras): un listener en
-     fase de **captura** sobre `document` se ejecuta antes que cualquier
-     listener en fase de "burbuja" sobre el canvas (aunque esté en el
-     mismo elemento), y `stopPropagation()` impide que el de Aladin
-     llegue a ejecutarse después. Con esto, `SkyView` (`ui/sky_view.py`)
-     no necesita NINGÚN código de menú contextual: solo expone los Slots
-     que la acción de JS llama directamente (`copiar_al_portapapeles`,
-     `abrir_url_externa`, en `bridge/sky_bridge.py`).
-  6. **Verificación**: confirmado con clics reales del usuario en su
-     propio PC (no solo con entrada sintética en el entorno de
-     desarrollo) — el log mostraba `lastContextMenuRequest` en `None`
-     indefinidamente con el enfoque anterior, confirmando que el bloqueo
-     era real y no un artefacto de la sandbox de desarrollo.
+- **Menú del mapa: por qué NO es el clic derecho.** El más largo de
+  depurar de todos, con diferencia. Resumen de dónde acabó la
+  investigación (la historia completa, paso a paso, está en el
+  comentario de cabecera de `resources/web/js/bridge.js`):
+  - Confirmado con clics reales del usuario (no solo entrada sintética):
+    tras soltar el botón derecho, `mousedown`/`mouseup` SÍ llegan con
+    normalidad al JavaScript de la página — pero el proceso de
+    **renderizado de Chromium se queda bloqueado por dentro** justo
+    después: no se ejecuta ninguna tarea de JavaScript nueva (ni un
+    `setTimeout` trivial disparado desde otro evento) durante más de 40
+    segundos.
+  - Se probaron, sin éxito, todas las vías razonables: menú en JS
+    disparado por `mousedown` o por `mouseup` (en fase de captura y de
+    burbuja, con y sin `stopPropagation()`), `contextMenuEvent()` de Qt,
+    un `eventFilter` sobre `self.focusProxy()` (el widget interno de
+    renderizado de Chromium — `QWebEngineView` es solo un envoltorio),
+    confirmar la petición de Chromium con
+    `lastContextMenuRequest().setAccepted(True)`, y descartar el mensaje
+    nativo `WM_CONTEXTMENU` de Windows a nivel de aplicación (esto último
+    SÍ arregla un problema relacionado — que hasta el zoom con la rueda
+    dejara de responder tras un clic derecho — y se queda en
+    `ui/native_filters.py` como medida defensiva, pero no consigue que el
+    menú aparezca).
+  - `self.lastContextMenuRequest()` nunca llega a rellenarse en esta app
+    (con la construcción diferida de `SkyView` que hace falta para que
+    el zoom funcione — ver el punto anterior), lo que apunta a que
+    Chromium se queda esperando por dentro a completar la información
+    del menú contextual que intenta construir automáticamente en
+    cualquier clic derecho — y esa espera nunca se resuelve en este
+    embebido concreto. Ninguna vía a nivel de Qt o de JavaScript consigue
+    desbloquearlo.
+  - **La solución**: no depender del clic derecho para nada. El botón
+    IZQUIERDO ya funciona perfectamente en esta app (zoom, arrastre) —
+    así que el menú se dispara con **Mayús + clic izquierdo**
+    (`resources/web/js/bridge.js`, función `configurarMenu`), un simple
+    `mouseup` con `shiftKey`, sin ningún rodeo. El menú en sí usa el
+    PROPIO sistema de Aladin (`aladin.contextMenu`, que Aladin crea
+    siempre, esté o no activado `showContextMenu`) con nuestras propias
+    acciones ("Centrar aquí", "Copiar coordenadas", "Ver en SIMBAD", "Ver
+    en VizieR"). Con esto, `SkyView` (`ui/sky_view.py`) no necesita
+    NINGÚN código de menú: solo expone los Slots que la acción de JS
+    llama directamente (`copiar_al_portapapeles`, `mostrar_pagina_web`,
+    en `bridge/sky_bridge.py`).
 
 ## Empaquetado (más adelante)
 

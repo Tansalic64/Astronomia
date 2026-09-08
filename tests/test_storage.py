@@ -1,6 +1,7 @@
 """Tests del almacenamiento local (favoritos/historial), sin Qt de por medio."""
 
 from astronomia.core.storage import Storage
+from astronomia.core.ubicacion import Ubicacion
 
 
 def test_favorito_se_guarda_y_se_lista(tmp_path):
@@ -59,3 +60,27 @@ def test_limpiar_historial(tmp_path):
     db.limpiar_historial()
 
     assert db.listar_historial() == []
+
+
+def test_obtener_ubicacion_sin_guardar_devuelve_none(tmp_path):
+    db = Storage(tmp_path / "test.sqlite3")
+    assert db.obtener_ubicacion() is None
+
+
+def test_guardar_y_obtener_ubicacion(tmp_path):
+    db = Storage(tmp_path / "test.sqlite3")
+    db.guardar_ubicacion(Ubicacion(lat=40.4168, lon=-3.7038, ciudad="Madrid", pais="Spain"))
+
+    ubicacion = db.obtener_ubicacion()
+
+    assert ubicacion == Ubicacion(lat=40.4168, lon=-3.7038, ciudad="Madrid", pais="Spain")
+
+
+def test_guardar_ubicacion_dos_veces_actualiza_en_vez_de_duplicar(tmp_path):
+    db = Storage(tmp_path / "test.sqlite3")
+    db.guardar_ubicacion(Ubicacion(lat=0.0, lon=0.0, ciudad="Sitio A"))
+    db.guardar_ubicacion(Ubicacion(lat=40.4168, lon=-3.7038, ciudad="Madrid"))
+
+    ubicacion = db.obtener_ubicacion()
+
+    assert ubicacion.ciudad == "Madrid"

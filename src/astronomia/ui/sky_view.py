@@ -5,16 +5,20 @@ el canal en `window.astronomia` (ver resources/web/js/bridge.js) y exponer una
 API en Python normal y corriente (`ir_a`, `fijar_fov`, ...) para que el resto
 de la aplicación no tenga que saber que por debajo hay JavaScript.
 
-El menú contextual (clic derecho) NO se implementa aquí, sino en JavaScript
-(`resources/web/js/bridge.js`, función `configurarMenuContextual`) — ver el
-comentario al principio de ese archivo para el porqué.
+El menú del mapa (Mayús + clic izquierdo — antes se intentó con el clic
+derecho, ver `resources/web/js/bridge.js` para la historia completa) se
+gestiona ENTERAMENTE en JavaScript. Por eso aquí no hay ningún código de
+menú contextual: `contextMenuPolicy` se deja en `NoContextMenu` sin más,
+para que un clic derecho accidental no intente mostrar el menú nativo
+(roto) de Qt/Chromium — ver `ui/native_filters.py` para por qué, además,
+se descarta el mensaje nativo `WM_CONTEXTMENU` de Windows.
 """
 
 from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -80,6 +84,8 @@ class SkyView(QWebEngineView):
         if not INDEX_HTML.is_file():
             log.error("No se encuentra el HTML del mapa: %s", INDEX_HTML)
         self.load(QUrl.fromLocalFile(str(INDEX_HTML)))
+
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
     # -- API en Python "normal" para el resto de la aplicación -------------
     def ir_a(self, nombre_objeto: str) -> None:

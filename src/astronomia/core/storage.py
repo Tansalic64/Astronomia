@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from astronomia import config
+from astronomia.core.ubicacion import Ubicacion
 
 log = logging.getLogger("astronomia.core.storage")
 
@@ -33,6 +34,17 @@ CREATE TABLE IF NOT EXISTS historial (
     ra           REAL,
     dec          REAL,
     visitado_en  TEXT NOT NULL
+);
+
+-- Una sola fila (id fijo = 1): la última ubicación conocida del
+-- observador, detectada por IP o fijada a mano.
+CREATE TABLE IF NOT EXISTS ubicacion (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    lat          REAL NOT NULL,
+    lon          REAL NOT NULL,
+    ciudad       TEXT NOT NULL DEFAULT '',
+    pais         TEXT NOT NULL DEFAULT '',
+    actualizado_en TEXT NOT NULL
 );
 """
 
@@ -135,6 +147,30 @@ class Storage:
     def limpiar_historial(self) -> None:
         self._conn.execute("DELETE FROM historial")
         self._conn.commit()
+
+    # -- Ubicación del observador ----------------------------------------------
+    def guardar_ubicacion(self, ubicacion: Ubicacion) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO ubicacion (id, lat, lon, ciudad, pais, actualizado_en)
+            VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                lat = excluded.lat,
+                lon = excluded.lon,
+                ciudad = excluded.ciudad,
+                pais = excluded.pais,
+                actualizado_en = excluded.actualizado_en
+            """,
+            (ubicacion.lat, ubicacion.lon, ubicacion.ciudad, ubicacion.pais, _ahora_iso()),
+        )
+        self._conn.commit()
+        log.info("Ubicación guardada: %s", ubicacion.etiqueta())
+
+    def obtener_ubicacion(self) -> Ubicacion | None:
+        fila = self._conn.execute("SELECT * FROM ubicacion WHERE id = 1").fetchone()
+        if fila is None:
+            return None
+        return Ubicacion(lat=fila["lat"], lon=fila["lon"], ciudad=fila["ciudad"], pais=fila["pais"])
 
     def _purgar_historial(self, mantener: int = 200) -> None:
         """Evita que el historial crezca sin límite."""

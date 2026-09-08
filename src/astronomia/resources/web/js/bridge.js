@@ -7,47 +7,45 @@
  *     aplicarlas sobre el mapa.
  *  3. Reenviar eventos del mapa (posición, clics) a Python llamando a los
  *     Slots definidos en SkyBridge (astronomia/bridge/sky_bridge.py).
- *  4. El menú contextual (clic derecho) — ver `configurarMenuContextual`.
+ *  4. El menú del mapa (Mayús + clic izquierdo) — ver `configurarMenu`.
  *
- * Historial del menú contextual (por si hay que volver a tocarlo — ha
- * costado bastante llegar hasta aquí):
+ * Historial del menú (por si hay que volver a tocarlo — ha costado mucho
+ * llegar hasta aquí, léelo antes de "arreglar" el disparador):
  *
- * 1. Aladin Lite (vendor/aladin/aladin.js, minificado) registra SU PROPIO
- *    listener de "contextmenu" sobre su canvas y llama a
- *    `event.preventDefault()` incondicionalmente (para poder mostrar su
- *    propio menú, funcionalidad normal de Aladin activable con
- *    `showContextMenu`, aquí desactivada). Esto en sí no es el problema
- *    real (ver el punto 2), pero significa que no basta con dejar que el
- *    comportamiento por defecto del navegador ocurra.
+ * Se probó primero con el CLIC DERECHO, la ubicación "natural" para un
+ * menú contextual. Tras mucho investigar (menús en JS, `contextMenuEvent`
+ * de Qt, `eventFilter` sobre el widget interno de QtWebEngine,
+ * `customContextMenuRequested`, confirmar la petición con
+ * `setAccepted()`, bloquear el mensaje nativo `WM_CONTEXTMENU` de Windows
+ * a nivel de aplicación — ver `ui/native_filters.py`, que se queda de
+ * todas formas por si acaso, ver más abajo — probando también distintas
+ * fases de eventos del DOM), la conclusión fue: en cuanto se suelta el
+ * botón derecho, el proceso de RENDERIZADO DE CHROMIUM se queda
+ * bloqueado por dentro (no un cuelgue de Qt, no un error nuestro) — dejan
+ * de ejecutarse tareas de JavaScript nuevas, incluso un `setTimeout`
+ * trivial disparado desde otro evento, durante más de 40 segundos
+ * (probado, no son unos pocos segundos de margen). Con
+ * `lastContextMenuRequest()` confirmado que JAMÁS llega a rellenarse en
+ * esta app (con la construcción diferida de `SkyView` que hace falta
+ * para que el zoom funcione — ver `ui/main_window.py`), todo apunta a
+ * que Chromium se queda esperando por dentro a completar la información
+ * del menú contextual que intenta construir automáticamente en CUALQUIER
+ * clic derecho, y esa espera nunca se resuelve en este embebido concreto.
+ * Ninguna de las vías probadas, a nivel de Qt o de JavaScript, consigue
+ * desbloquearlo.
  *
- * 2. El problema real, mucho más de fondo: el evento `"contextmenu"` del
- *    DOM **nunca llega a sintetizarse en absoluto** tras un clic derecho
- *    real (comprobado con sondas en `mousedown`/`mouseup`/`contextmenu`:
- *    los dos primeros SÍ llegan con normalidad, el último nunca) — Y,
- *    ADEMÁS, el zoom del mapa deja de responder después del clic, incluso
- *    sin que ni nuestro código ni el de Aladin lleguen a intervenir para
- *    nada (probado con un listener de "contextmenu" que jamás se disparó).
- *    Esto descarta que el problema esté aquí, en JavaScript: algo en el
- *    procesamiento INTERNO de Qt/QtWebEngine del mensaje nativo de
- *    Windows `WM_CONTEXTMENU` deja colgado el proceso de renderizado.
- *    La solución a ESE problema vive en Python
- *    (`ui/native_filters.py`): se descarta `WM_CONTEXTMENU` a nivel de
- *    filtro de eventos nativos de la aplicación, antes de que Qt llegue
- *    a procesarlo.
+ * La salida: no depender del botón derecho para nada. El botón IZQUIERDO
+ * ya funciona perfectamente en esta app (zoom, arrastre, llevan meses
+ * probados) — así que el menú se dispara con Mayús + clic izquierdo en
+ * su lugar, que evita por completo ese camino roto de Chromium. Con esto,
+ * ya no hace falta ninguno de los rodeos que necesitaba el clic derecho
+ * (fases de captura/burbuja, `setTimeout`, confirmar la petición desde
+ * Python...): un simple `mouseup` con `shiftKey` basta.
  *
- * 3. Con `WM_CONTEXTMENU` descartado, el DOM tampoco lo verá nunca (es
- *    quien lo sintetizaba, o lo habría sintetizado) — así que el menú no
- *    puede esperar al evento `"contextmenu"`. Se dispara en su lugar
- *    desde `"mouseup"` con `button === 2` (botón derecho), que SÍ llega
- *    con toda normalidad. Se usa fase de "captura" sobre `document` para
- *    ejecutarse antes que el propio `mouseup` interno de Aladin, y
- *    `stopPropagation()` para que el de Aladin no llegue a procesar el
- *    clic derecho como iría a hacer normalmente.
- *
- * 4. El menú en sí usa el PROPIO sistema de Aladin
- *    (`aladin.contextMenu`, un `<ul>` que Aladin ya crea siempre, esté o
- *    no activado `showContextMenu`) con nuestras propias acciones, en vez
- *    de reinventar un menú desde cero.
+ * El menú en sí sigue usando el PROPIO sistema de Aladin
+ * (`aladin.contextMenu`, un `<ul>` que Aladin ya crea siempre, esté o no
+ * activado `showContextMenu`) con nuestras propias acciones, en vez de
+ * reinventar un menú desde cero.
  */
 
 (function () {
@@ -109,90 +107,82 @@
       window.activarTraduccionAladin("aladin-lite-div");
     }
 
-    configurarMenuContextual();
+    configurarMenu();
 
     log("Aladin Lite inicializado");
     if (bridge) bridge.on_mapa_listo();
   }
 
   // Ver el comentario largo al principio del archivo para el porqué de
-  // "mouseup" en vez de "contextmenu", y de la fase de captura +
-  // stopPropagation.
-  function configurarMenuContextual() {
-    document.addEventListener(
-      "mouseup",
-      function (evento) {
-        if (evento.button !== 2) return; // solo el botón derecho
+  // Mayús + clic izquierdo en vez de clic derecho.
+  function configurarMenu() {
+    document.addEventListener("mouseup", function (evento) {
+      if (evento.button !== 0 || !evento.shiftKey) return; // solo Mayús + clic izquierdo
+      mostrarMenu(evento);
+    });
+  }
 
-        evento.preventDefault();
-        evento.stopPropagation();
+  function mostrarMenu(evento) {
+    const rect = aladin.aladinDiv.getBoundingClientRect();
+    const x = evento.clientX - rect.left;
+    const y = evento.clientY - rect.top;
 
-        const rect = aladin.aladinDiv.getBoundingClientRect();
-        const x = evento.clientX - rect.left;
-        const y = evento.clientY - rect.top;
+    let coords = null;
+    try {
+      coords = aladin.pix2world(x, y);
+    } catch (e) {
+      coords = null;
+    }
 
-        let coords = null;
-        try {
-          coords = aladin.pix2world(x, y);
-        } catch (e) {
-          coords = null;
-        }
+    const acciones = [];
+    if (coords) {
+      const ra = coords[0];
+      const dec = coords[1];
 
-        const acciones = [];
-        if (coords) {
-          const ra = coords[0];
-          const dec = coords[1];
+      acciones.push({
+        label: "Centrar aquí",
+        action() {
+          aladin.gotoRaDec(ra, dec);
+        },
+      });
 
-          acciones.push({
-            label: "Centrar aquí",
-            action() {
-              aladin.gotoRaDec(ra, dec);
-            },
-          });
+      const textoCoords = ra.toFixed(6) + " " + dec.toFixed(6);
+      acciones.push({
+        label: "Copiar coordenadas (" + ra.toFixed(5) + "°, " + dec.toFixed(5) + "°)",
+        action() {
+          if (bridge) bridge.copiar_al_portapapeles(textoCoords);
+        },
+      });
 
-          const textoCoords = ra.toFixed(6) + " " + dec.toFixed(6);
-          acciones.push({
-            label:
-              "Copiar coordenadas (" + ra.toFixed(5) + "°, " + dec.toFixed(5) + "°)",
-            action() {
-              if (bridge) bridge.copiar_al_portapapeles(textoCoords);
-            },
-          });
+      const coordsUrl = encodeURIComponent(textoCoords);
+      acciones.push({
+        label: "Ver en SIMBAD",
+        action() {
+          if (bridge) {
+            bridge.mostrar_pagina_web(
+              "https://simbad.cds.unistra.fr/simbad/sim-coo?Coord=" +
+                coordsUrl +
+                "&Radius=2&Radius.unit=arcmin"
+            );
+          }
+        },
+      });
+      acciones.push({
+        label: "Ver en VizieR",
+        action() {
+          if (bridge) {
+            bridge.mostrar_pagina_web(
+              "https://vizier.cds.unistra.fr/viz-bin/VizieR?-c=" + coordsUrl + "&-c.rs=120"
+            );
+          }
+        },
+      });
+    } else {
+      acciones.push({ label: "(fuera del mapa)", disabled: true });
+    }
 
-          const coordsUrl = encodeURIComponent(textoCoords);
-          acciones.push({
-            label: "Ver en SIMBAD",
-            action() {
-              if (bridge) {
-                bridge.abrir_url_externa(
-                  "https://simbad.cds.unistra.fr/simbad/sim-coo?Coord=" +
-                    coordsUrl +
-                    "&Radius=2&Radius.unit=arcmin"
-                );
-              }
-            },
-          });
-          acciones.push({
-            label: "Ver en VizieR",
-            action() {
-              if (bridge) {
-                bridge.abrir_url_externa(
-                  "https://vizier.cds.unistra.fr/viz-bin/VizieR?-c=" +
-                    coordsUrl +
-                    "&-c.rs=120"
-                );
-              }
-            },
-          });
-        } else {
-          acciones.push({ label: "(fuera del mapa)", disabled: true });
-        }
-
-        aladin.contextMenu.attach(acciones, null);
-        aladin.contextMenu._show({ e: evento });
-      },
-      true // fase de captura: se ejecuta ANTES que el listener propio de Aladin
-    );
+    aladin.contextMenu.attach(acciones, null);
+    aladin.contextMenu._show({ e: evento });
   }
 
   function conectarSenalesPython() {

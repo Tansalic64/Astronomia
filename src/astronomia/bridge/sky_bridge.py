@@ -33,6 +33,7 @@ class SkyBridge(QObject):
     mapa_listo = Signal()
     posicion_cambiada = Signal(float, float)    # RA, DEC del centro actual
     objeto_clicado = Signal(str, float, float)  # etiqueta, RA, DEC
+    pagina_web_solicitada = Signal(str)         # URL a mostrar en `ui/visor_web.py`
 
     # -- Slots: invocables desde JavaScript ---------------------------------
     @Slot()
@@ -59,14 +60,22 @@ class SkyBridge(QObject):
     def copiar_al_portapapeles(self, texto: str) -> None:
         """Copia texto usando el portapapeles nativo de Qt.
 
-        También se llama directamente desde Python (sin pasar por JS) en el
-        menú contextual del mapa — ver `ui/sky_view.py`.
+        Se llama desde el menú contextual del mapa, hecho en JavaScript —
+        ver `resources/web/js/bridge.js`.
         """
         QGuiApplication.clipboard().setText(texto)
         log.debug("Copiado al portapapeles: %s", texto)
 
     @Slot(str)
     def abrir_url_externa(self, url: str) -> None:
-        """Abre una URL en el navegador por defecto del sistema (no en el mapa)."""
+        """Abre una URL en el navegador por defecto del sistema (no en la app)."""
         log.info("Abriendo enlace externo: %s", url)
         QDesktopServices.openUrl(QUrl(url))
+
+    @Slot(str)
+    def mostrar_pagina_web(self, url: str) -> None:
+        """Pide mostrar una URL en una ventana propia de la app (`ui/visor_web.py`),
+        en vez de salir al navegador del sistema — usado por "Ver en SIMBAD"/
+        "Ver en VizieR" del menú contextual del mapa.
+        """
+        self.pagina_web_solicitada.emit(url)
