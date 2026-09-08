@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Astronomía - Mapa celeste</title>
+<link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="aladin-lite-div"></div>
+
+  <!-- Puente Qt: este archivo lo sirve QtWebEngine automáticamente -->
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+
+  <!-- Aladin Lite v3: bundle autocontenido, vendorizado en local (no depende
+       de un CDN para arrancar). Aun así, cargar imágenes del cielo (HiPS)
+       sigue necesitando internet: eso es inherente a un mapa celeste online. -->
+  <script src="vendor/aladin/aladin.js" charset="utf-8"
+          onerror="console.error('No se pudo cargar vendor/aladin/aladin.js (¿falta el fichero vendorizado?)')"></script>
+  <script src="js/i18n_aladin.js"></script>
+  <script src="js/bridge.js"></script>
+</body>
+</html>

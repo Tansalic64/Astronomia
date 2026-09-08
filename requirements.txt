@@ -1,0 +1,7 @@
+# Dependencias de ejecución de Astronomía
+# Estrategia 1: PySide6 (Qt) + QWebEngineView para el mapa celeste (Aladin Lite)
+#
+# El metapaquete PySide6 arrastra PySide6-Essentials y PySide6-Addons;
+# Addons es el que trae QtWebEngineWidgets y QtWebChannel (puente JS<->Python).
+
+PySide6>=6.7,<6.10

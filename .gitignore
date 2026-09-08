@@ -1,0 +1,33 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Empaquetado
+build/
+dist/
+*.spec.bak
+
+# Configuración local / secretos
+.env
+
+# Editores
+.vscode/
+.idea/
+*.code-workspace
+
+# SO
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs y capturas sueltas de depuración manual
+*.log
+/*.png
